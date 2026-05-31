@@ -711,8 +711,8 @@ async function doFetch(background,fileUrlOverride){
     const fk=parseFileKeyClient(fileUrl);
     const cachedStruct=fk?lget(structKey(fk)):null;
     const res=await fetch(FN("fetch"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({fileUrl,token:S.token,structLastModified:cachedStruct?cachedStruct.lastModified:""})});
-    const raw=await res.json();
-    if(!res.ok){ if(raw.auth){onAuthFail(raw.error);} else {say("err",raw.error||"오류");} return; }
+    let raw; try{ raw=await res.json(); }catch{ raw={}; }
+    if(!res.ok){ if(raw.auth){onAuthFail(raw.error);} else {say("err",(raw.error||raw.errorMessage||("불러오기 실패 (HTTP "+res.status+")"))); } return; }
     // 구조(노드맵): 새로 받았으면 저장, 아니면 캐시 사용
     let nodes;
     if(raw.nodes){nodes=raw.nodes;lset(structKey(raw.fileKey),{lastModified:raw.lastModified||"",nodes});}
@@ -728,7 +728,7 @@ async function doFetch(background,fileUrlOverride){
     $("url").value=fileUrl;
     lset(cacheKey(data.fileKey),data);
     lset(K_URL,fileUrl);
-    setHint("ok","등록 코멘트 "+data.stats.threads+"건 · 답글 "+data.stats.replies+"개 (총 "+data.stats.total+")"+(raw.usedCache?" · 구조 캐시 사용":""));
+    setHint("ok","등록 코멘트 "+data.stats.threads+"건 · 답글 "+data.stats.replies+"개 (총 "+data.stats.total+")"+(raw.usedCache?" · 구조 캐시 사용":"")+(raw.structTimedOut?" · 파일이 커서 페이지/위치 정보는 생략됨":""));
     loadFiles();
   }catch(e){ if(!background) say("err","네트워크 오류: "+e.message); }
   finally{ btn.disabled=false; btn.textContent=adding?"추가":"새로고침"; }
