@@ -14,7 +14,11 @@ exports.handler = async (event) => {
     if (!r.ok) return resp(r.status, { error: `이미지 렌더 실패: ${r.status}` });
     const d = await r.json();
     const imgUrl = d && d.images && d.images[nodeId];
-    if (!imgUrl) return resp(404, { error: "렌더 결과 없음." });
+    if (!imgUrl) {
+      const why = (d && d.err) ? ("렌더 실패: " + d.err)
+        : "이 코멘트가 가리키는 노드를 렌더할 수 없어요 (노드가 삭제됐거나 렌더 불가). 다른 코멘트의 위치 보기를 시도해 보세요.";
+      return resp(404, { error: why });
+    }
     return resp(200, { url: imgUrl });
   } catch (e) { return resp(502, { error: "이미지 요청 실패: " + e.message }); }
 };

@@ -438,7 +438,7 @@
     <button class="lb-btn" id="lbClose">✕</button>
   </div>
   <div class="lb-stage" id="lbStage"><div class="lb-canvas" id="lbCanvas"><img id="lbImg" alt="" draggable="false" /><span class="lb-pin" id="lbPin" hidden></span></div></div>
-  <div class="lb-hint">스크롤=확대/축소 · 드래그=이동 · 더블클릭=원래대로</div>
+  <div class="lb-hint" id="lbHint">스크롤=확대/축소 · 드래그=이동 · 더블클릭=원래대로</div>
 </div>
 <div class="toast" id="toast"></div>
 
@@ -909,16 +909,16 @@ function card(c){
     let loaded=false;
     // hover prefetch (0.4s 지연, 캐시, 동시 제한)
     let hoverT;
-    el.addEventListener("mouseenter",()=>{hoverT=setTimeout(()=>pfSchedule(()=>loadImg(c.anchorNodeId).catch(()=>{})),400);});
+    el.addEventListener("mouseenter",()=>{hoverT=setTimeout(()=>pfSchedule(()=>loadImg(c.anchorNodeId,1).catch(()=>{})),400);});
     el.addEventListener("mouseleave",()=>clearTimeout(hoverT));
     pvBtn.onclick=async()=>{
       const showing=pv.classList.toggle("show");pvBtn.textContent=showing?"⊞ 미리보기 숨기기":"⊞ 위치 보기";
       if(showing&&!loaded){loaded=true;
-        const cachedUrl=getCachedImg(c.anchorNodeId);
+        const cachedUrl=getCachedImg(c.anchorNodeId,1);
         if(cachedUrl){paintPreview(pvWrap,pv,c,cachedUrl);}
         else{pvWrap.innerHTML='<div class="pv-progress"><span class="spin" style="border-top-color:var(--accent)"></span>Figma에서 렌더 중… 몇 초 걸릴 수 있어요<div class="pv-bar"><i></i></div></div>';
-          try{const url=await loadImg(c.anchorNodeId);if(url)paintPreview(pvWrap,pv,c,url);else pvWrap.innerHTML='<div class="pv-progress">미리보기를 불러올 수 없습니다.</div>';}
-          catch(e){pvWrap.innerHTML='<div class="pv-progress">'+esc(e.message)+'</div>';}
+          try{const url=await loadImg(c.anchorNodeId,1);if(url)paintPreview(pvWrap,pv,c,url);else pvWrap.innerHTML='<div class="pv-progress">미리보기를 불러올 수 없습니다.</div>';}
+          catch(e){loaded=false;pvWrap.innerHTML='<div class="pv-progress">'+esc(e.message)+'</div>';}
         }
       }
     };
@@ -929,7 +929,7 @@ function paintPreview(pvWrap,pv,c,url){
   let px=null,py=null;
   if(c.nodeOffset&&c.anchorNodeSize&&c.anchorNodeSize.w&&c.anchorNodeSize.h){px=Math.max(0,Math.min(100,c.nodeOffset.x/c.anchorNodeSize.w*100));py=Math.max(0,Math.min(100,c.nodeOffset.y/c.anchorNodeSize.h*100));}
   pvWrap.innerHTML='<img src="'+url+'"/>'+(px!==null?'<span class="pin" style="left:'+px+'%;top:'+py+'%"></span>':'')+'<span class="pv-zoomhint">클릭하면 확대</span>';
-  pvWrap.onclick=()=>openLightbox(url,px,py,"#"+c.thread+" · "+(c.anchorNodeName||c.anchorNodeId));
+  pvWrap.onclick=()=>openLightbox(url,px,py,"#"+c.thread+" · "+(c.anchorNodeName||c.anchorNodeId),c.anchorNodeId);
   if(!pv.querySelector(".pv-cap")){const cap=document.createElement("div");cap.className="pv-cap";cap.textContent="앵커: "+(c.anchorNodeName||c.anchorNodeId);pv.appendChild(cap);}
 }
 
@@ -976,16 +976,18 @@ async function postReply(parent,message,onOk){
   }catch(e){toast("답글 오류: "+e.message);}
 }
 
-/* ============ 이미지 캐시 + prefetch ============ */
-function getCachedImg(nodeId){const o=lget(imgKey(S.fileKey));if(o&&o.lastModified===S.lastModified&&o.urls&&o.urls[nodeId])return o.urls[nodeId];return null;}
-function setCachedImg(nodeId,url){let o=lget(imgKey(S.fileKey));if(!o||o.lastModified!==S.lastModified)o={lastModified:S.lastModified,urls:{}};o.urls[nodeId]=url;lset(imgKey(S.fileKey),o);}
-async function loadImg(nodeId){
+/* ============ 이미지 캐시 + prefetch (scale별 캐시) ============ */
+function imgCacheKey(nodeId,scale){return nodeId+"@"+(scale||1);}
+function getCachedImg(nodeId,scale){const o=lget(imgKey(S.fileKey));const k=imgCacheKey(nodeId,scale);if(o&&o.lastModified===S.lastModified&&o.urls&&o.urls[k])return o.urls[k];return null;}
+function setCachedImg(nodeId,scale,url){let o=lget(imgKey(S.fileKey));if(!o||o.lastModified!==S.lastModified)o={lastModified:S.lastModified,urls:{}};o.urls[imgCacheKey(nodeId,scale)]=url;lset(imgKey(S.fileKey),o);}
+async function loadImg(nodeId,scale){
   if(!nodeId)return null;
-  const c=getCachedImg(nodeId);if(c)return c;
-  const r=await fetch(FN("image"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({fileKey:S.fileKey,nodeId,token:S.token,scale:1})});
+  scale=scale||1;
+  const c=getCachedImg(nodeId,scale);if(c)return c;
+  const r=await fetch(FN("image"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({fileKey:S.fileKey,nodeId,token:S.token,scale})});
   const d=await r.json();
   if(!r.ok){if(d.auth)onAuthFail(d.error);throw new Error(d.error||"이미지 실패");}
-  if(d.url)setCachedImg(nodeId,d.url);
+  if(d.url)setCachedImg(nodeId,scale,d.url);
   return d.url;
 }
 let pfActive=0;const pfQ=[];
@@ -1005,8 +1007,24 @@ function wireLightbox(){
   window.addEventListener("mouseup",()=>{LB.drag=false;stage.classList.remove("grabbing");});
   stage.addEventListener("dblclick",fitLightbox);
 }
-function openLightbox(url,px,py,title){const img=$("lbImg");LB.px=px;LB.py=py;$("lbTitle").textContent=title||"";$("lightbox").classList.add("show");img.onload=()=>{LB.natW=img.naturalWidth;LB.natH=img.naturalHeight;fitLightbox();};img.src=url;}
-function closeLightbox(){$("lightbox").classList.remove("show");$("lbImg").src="";}
+function openLightbox(url,px,py,title,nodeId){
+  const img=$("lbImg");LB.px=px;LB.py=py;LB.hi=false;LB.token=(LB.token||0)+1;const myTok=LB.token;
+  $("lbTitle").textContent=title||"";$("lightbox").classList.add("show");
+  $("lbHint").textContent="스크롤=확대/축소 · 드래그=이동 · 더블클릭=원래대로";
+  img.onload=()=>{LB.natW=img.naturalWidth;LB.natH=img.naturalHeight;fitLightbox();};
+  img.src=url;   // 썸네일(scale 1) 먼저
+  // 고해상도(scale 2)를 백그라운드로 받아 교체 — 더 자세한 이미지
+  if(nodeId){
+    $("lbHint").textContent="고해상도 불러오는 중…";
+    loadImg(nodeId,2).then(hi=>{
+      if(!hi||myTok!==LB.token||!$("lightbox").classList.contains("show"))return;
+      LB.hi=true;
+      img.onload=()=>{LB.natW=img.naturalWidth;LB.natH=img.naturalHeight;fitLightbox();$("lbHint").textContent="고해상도 · 스크롤=확대 · 드래그=이동 · 더블클릭=원래대로";};
+      img.src=hi;
+    }).catch(()=>{$("lbHint").textContent="스크롤=확대/축소 · 드래그=이동 · 더블클릭=원래대로";});
+  }
+}
+function closeLightbox(){$("lightbox").classList.remove("show");$("lbImg").src="";LB.token=(LB.token||0)+1;}
 function fitLightbox(){const r=$("lbStage").getBoundingClientRect();const s=Math.min(1,Math.max(.05,Math.min((r.width-40)/(LB.natW||1),(r.height-40)/(LB.natH||1))));LB.scale=s;LB.tx=-(LB.natW*s)/2;LB.ty=-(LB.natH*s)/2;applyLB();}
 function zoomBy(f){const r=$("lbStage").getBoundingClientRect();zoomAt(f,r.width/2,r.height/2);}
 function zoomAt(f,cx,cy){const ns=Math.min(8,Math.max(.05,LB.scale*f)),k=ns/LB.scale,r=$("lbStage").getBoundingClientRect(),ox=cx-r.width/2,oy=cy-r.height/2;LB.tx=ox-(ox-LB.tx)*k;LB.ty=oy-(oy-LB.ty)*k;LB.scale=ns;applyLB();}
