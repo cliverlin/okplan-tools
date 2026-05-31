@@ -53,6 +53,7 @@
   .hint.ok{color:var(--done);}.hint.err{color:var(--warn);}.hint.muted{color:var(--soft);}
   .file-add{display:none;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 15px;box-shadow:var(--shadow);margin-bottom:14px;}
   .file-add.show{display:block;}
+  .file-add .hint{display:block;margin-top:9px;}
   .file-add-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
   .file-add-title{font-size:12px;font-weight:800;color:var(--soft);margin-bottom:9px;}
   .conn-summary{flex:1;min-width:220px;color:var(--ink);font-size:16px;font-weight:800;line-height:1.35;}
@@ -355,16 +356,17 @@
 
   <div class="layout">
     <aside class="sidebar" id="sidebar">
-      <div class="side-head"><span>파일</span><button class="toolbtn" id="newFileBtn">파일 추가</button></div>
+      <div class="side-head"><span>파일</span><button class="toolbtn" id="newFileBtn">URL 추가</button></div>
       <div class="file-list" id="fileList"></div>
     </aside>
     <div class="main">
       <div class="file-add" id="fileAdd">
-        <div class="file-add-title">파일 추가</div>
+        <div class="file-add-title">URL 추가</div>
         <div class="file-add-row">
-          <input id="url" class="url-in" type="text" placeholder="Figma 파일 URL" spellcheck="false" />
+          <input id="url" class="url-in" type="text" placeholder="Figma 코멘트를 가져올 URL" spellcheck="false" />
           <button class="btn btn-primary" id="addFileBtn">추가</button>
         </div>
+        <span class="hint muted" id="fileAddHint"></span>
       </div>
 
       <div class="conn" id="fileHeader">
@@ -506,15 +508,15 @@ function renderSidebar(){
 }
 function renderEmptyState(){
   const fileCount=S.files.length;
-  const tokenText=S.token?"연결 준비됨":"토큰 설정 필요";
+  const tokenText=S.token?(S.handle?("@"+S.handle+" 연결됨"):"연결 준비됨"):"토큰 설정 필요";
   $("list").innerHTML=
     '<section class="empty-welcome">'+
       '<div class="empty-copy">'+
         '<div class="empty-eyebrow">Comment review workspace</div>'+
-        '<h2>검토할 Figma 파일을 선택하세요.</h2>'+
-        '<p>좌측 파일을 선택하면 댓글 현황, 필터, 북마크와 확인 상태가 이 영역에 바로 표시됩니다. 새 파일은 URL로 추가할 수 있습니다.</p>'+
+        '<h2>Figma 코멘트를 가져올 URL을 추가하세요.</h2>'+
+        '<p>URL을 추가하면 댓글 현황, 필터, 북마크와 확인 상태가 이 영역에 바로 표시됩니다. 추가한 URL은 좌측 목록에서 다시 선택할 수 있습니다.</p>'+
         '<div class="empty-actions">'+
-          '<button class="btn btn-primary" data-add-file>파일 추가</button>'+
+          '<button class="btn btn-primary" data-add-file>URL 추가</button>'+
         '</div>'+
       '</div>'+
       '<aside class="empty-side" aria-label="현재 준비 상태">'+
@@ -580,10 +582,11 @@ function openFileAdd(){
   $("fileAdd").classList.add("show");
   $("url").value="";
   $("url").focus();
-  setHint("muted","추가할 Figma 파일 URL을 입력하세요.");
+  setFileAddHint("muted","Figma 코멘트를 가져올 URL을 붙여넣고 추가를 누르세요.");
 }
 function openSettings(){$("settings").classList.add("show");}
 function setHint(cls,txt){$("hint").className="hint "+cls;$("hint").textContent=txt;}
+function setFileAddHint(cls,txt){$("fileAddHint").className="hint "+cls;$("fileAddHint").textContent=txt;}
 function setConnChip(cls,txt){const c=$("connChip");c.className="conn-chip "+(cls||"");c.textContent=txt;}
 function resetFilters(){
   S.filters={ page:"__all", done:"all", reply:"all", figma:"all", flagged:"all", date:"all", from:null, to:null, q:"" };
@@ -605,6 +608,7 @@ async function saveToken(){
   if(url)lset(K_URL,url);
   if($("remember").checked){lset(K_TOKEN,S.token);toast("토큰 저장됨");}
   else{lremove(K_TOKEN);toast("이번 세션에서만 사용");}
+  if(!S.fileKey)renderEmptyState();   // 첫 화면 준비 상태 갱신
 }
 function clearToken(){
   S.token="";$("token").value="";
@@ -613,6 +617,7 @@ function clearToken(){
   $("gearBtn").classList.remove("alert");
   lremove(K_TOKEN);
   toast("저장된 토큰 삭제됨");
+  if(!S.fileKey)renderEmptyState();
 }
 async function verifyToken(){
   if(!S.token){$("connState").className="conn-state off";$("connState").textContent="토큰이 입력되지 않았습니다.";setConnChip("off","토큰 없음");return;}
@@ -623,6 +628,7 @@ async function verifyToken(){
     const d=await r.json();
     if(!r.ok){$("connState").className="conn-state bad";$("connState").textContent=(d.error||"토큰 오류");$("gearBtn").classList.add("alert");setConnChip("bad","토큰 오류");return;}
     $("connState").className="conn-state on";$("connState").textContent="연결됨 · @"+(d.handle||"");$("gearBtn").classList.remove("alert");setConnChip("on","@"+(d.handle||"연결됨"));
+    S.handle=d.handle||""; if(!S.fileKey)renderEmptyState();   // 첫 화면 준비 상태 갱신
   }catch(e){$("connState").className="conn-state bad";$("connState").textContent="확인 실패: "+e.message;setConnChip("bad","확인 실패");}
 }
 function onAuthFail(msg){
@@ -694,16 +700,19 @@ function processFetch(raw,nodes){
 
 async function doFetch(background,fileUrlOverride){
   const fileUrl=(fileUrlOverride||S.fileUrl||$("url").value.trim()).trim();
-  if(!fileUrl){setHint("err","파일 URL을 입력하세요.");return;}
+  // 첫 추가(파일 헤더가 숨김)일 땐 추가 패널 쪽에 피드백을 보여준다
+  const adding=$("fileAdd").classList.contains("show")&&!$("fileHeader").classList.contains("show");
+  const say=(cls,txt)=>adding?setFileAddHint(cls,txt):setHint(cls,txt);
+  if(!fileUrl){say("err","URL을 입력하세요.");return;}
   if(!S.token){onAuthFail("토큰을 먼저 입력하세요.");return;}
-  const btn=$("fetchBtn");
-  if(!background){btn.disabled=true;btn.innerHTML='<span class="spin"></span>가져오는 중';setHint("muted","Figma에서 불러오는 중…");}
+  const btn=adding?$("addFileBtn"):$("fetchBtn");
+  if(!background){btn.disabled=true;btn.innerHTML='<span class="spin"></span>'+(adding?"가져오는 중":"가져오는 중");say("muted","Figma에서 불러오는 중…");}
   try{
     const fk=parseFileKeyClient(fileUrl);
     const cachedStruct=fk?lget(structKey(fk)):null;
     const res=await fetch(FN("fetch"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({fileUrl,token:S.token,structLastModified:cachedStruct?cachedStruct.lastModified:""})});
     const raw=await res.json();
-    if(!res.ok){ if(raw.auth){onAuthFail(raw.error);} else {setHint("err",raw.error||"오류");} return; }
+    if(!res.ok){ if(raw.auth){onAuthFail(raw.error);} else {say("err",raw.error||"오류");} return; }
     // 구조(노드맵): 새로 받았으면 저장, 아니면 캐시 사용
     let nodes;
     if(raw.nodes){nodes=raw.nodes;lset(structKey(raw.fileKey),{lastModified:raw.lastModified||"",nodes});}
@@ -721,8 +730,8 @@ async function doFetch(background,fileUrlOverride){
     lset(K_URL,fileUrl);
     setHint("ok","등록 코멘트 "+data.stats.threads+"건 · 답글 "+data.stats.replies+"개 (총 "+data.stats.total+")"+(raw.usedCache?" · 구조 캐시 사용":""));
     loadFiles();
-  }catch(e){ if(!background) setHint("err","네트워크 오류: "+e.message); }
-  finally{ btn.disabled=false; btn.textContent="새로고침"; }
+  }catch(e){ if(!background) say("err","네트워크 오류: "+e.message); }
+  finally{ btn.disabled=false; btn.textContent=adding?"추가":"새로고침"; }
 }
 
 function deleteCurrentFile(){
