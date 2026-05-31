@@ -1,0 +1,8 @@
+# okplan-tools 허브 — 정적 사이트 + Figma 프록시 함수
+# 도구는 publish 폴더의 하위 경로로 추가됩니다 (예: /figma-comment-tracker).
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+
+# 함수는 프런트엔드에서 /.netlify/functions/fct-* 로 직접 호출합니다.
+# (별도 /api 리다이렉트 없음 — 허브에 도구가 늘어도 접두어로 충돌 방지)

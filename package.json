@@ -1,0 +1,13 @@
+{
+  "name": "okplan-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OfficeKeeper 기획 도구 모음 (Figma Comment Tracker 등) — Netlify 정적 사이트 + 서버리스 함수",
+  "type": "commonjs",
+  "scripts": {
+    "dev": "netlify dev"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

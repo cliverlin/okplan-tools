@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OK Plan Tools</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+<style>
+  :root{--bg:#070b12;--card:rgba(20,28,45,.92);--line:rgba(255,255,255,.1);--line-2:rgba(255,255,255,.16);
+    --text:#f3f6fb;--sub:rgba(243,246,251,.7);--muted:rgba(243,246,251,.5);--primary:#8ab4ff;--secondary:#78e3ff;}
+  *{box-sizing:border-box;}
+  body{margin:0;min-height:100vh;font-family:'Pretendard',-apple-system,sans-serif;color:var(--text);
+    background:radial-gradient(circle at 20% 0%,rgba(68,114,196,.22),transparent 34%),
+      radial-gradient(circle at 85% 15%,rgba(82,152,255,.18),transparent 28%),
+      linear-gradient(180deg,#09111d 0%,#070b12 48%,#060910 100%);}
+  .wrap{max-width:880px;margin:0 auto;padding:80px 24px;}
+  .eyebrow{font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--secondary);margin-bottom:14px;}
+  h1{font-size:38px;font-weight:800;letter-spacing:-.03em;margin:0 0 12px;}
+  .lead{font-size:16px;color:var(--sub);line-height:1.7;margin:0 0 40px;}
+  .grid{display:grid;gap:16px;}
+  .tool{display:flex;align-items:center;gap:16px;text-decoration:none;color:inherit;background:linear-gradient(180deg,rgba(20,28,45,.92),rgba(13,19,31,.95));
+    border:1px solid var(--line);border-radius:18px;padding:22px 24px;transition:.18s;}
+  .tool:hover{border-color:var(--line-2);transform:translateY(-2px);}
+  .tool-ic{width:48px;height:48px;border-radius:14px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+    background:linear-gradient(135deg,rgba(113,170,255,.22),rgba(120,227,255,.12));border:1px solid rgba(255,255,255,.1);color:var(--primary);}
+  .tool-body{flex:1;min-width:0;}
+  .tool-title{font-size:17px;font-weight:700;margin:0 0 4px;}
+  .tool-desc{font-size:14px;color:var(--muted);margin:0;}
+  .tool-arrow{color:var(--primary);font-size:20px;}
+  .foot{margin-top:48px;color:var(--muted);font-size:13px;}
+  .foot a{color:var(--primary);}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="eyebrow">OfficeKeeper Plan Tools</div>
+    <h1>기획 도구 모음</h1>
+    <p class="lead">기획·검토 작업을 돕는 사내 도구 모음입니다. 아래에서 도구를 선택하세요.</p>
+
+    <div class="grid">
+      <a class="tool" href="./figma-comment-tracker/">
+        <span class="tool-ic">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v9A1.5 1.5 0 0 1 18.5 16H9l-4 3.5V16H5.5A1.5 1.5 0 0 1 4 14.5v-9Z" fill="rgba(138,180,255,.18)" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+            <path d="M8 8.5h8M8 11.5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
+        </span>
+        <div class="tool-body">
+          <p class="tool-title">Figma Comment Tracker</p>
+          <p class="tool-desc">Figma 댓글을 가져와 검토 상태를 추적·관리</p>
+        </div>
+        <span class="tool-arrow">→</span>
+      </a>
+    </div>
+
+    <div class="foot">© OfficeKeeper Plan Tools · <a href="https://okplan.netlify.app/">포털로 돌아가기</a></div>
+  </div>
+</body>
+</html>
