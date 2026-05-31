@@ -1,8 +1,9 @@
-/* Figma Comment Tracker — 댓글 + 파일메타(+필요시 앵커 노드맵) 프록시 (상태 없음)
- * 상태(검토/이력/스냅샷/파일목록)는 클라이언트 localStorage가 관리.
- * 구조는 "댓글이 붙은 앵커 노드"만 반환해 응답을 작게 유지하고, 트리 호출엔 타임아웃 가드를 둔다. */
+/* Figma Comment Tracker — 댓글 + 파일메타(+앵커 노드만) 프록시 (상태 없음)
+ * 큰 파일에서 전체 문서를 파싱하면 함수가 OOM으로 killed 되므로,
+ * 댓글이 붙은 노드 id만 ?ids=... 로 요청해 "노드 + 루트~노드 경로(페이지)"만 받는다. */
 const FIGMA = "https://api.figma.com/v1";
-const TREE_TIMEOUT_MS = 7500; // Netlify 함수 한도(보통 10s) 안에서 안전하게
+const TREE_TIMEOUT_MS = 8000;   // Netlify 함수 한도(보통 10s) 안에서
+const IDS_PER_REQUEST = 120;    // ?ids= URL 길이/응답 크기 제한 대비 청크
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") return resp(405, { error: "POST only" });
@@ -15,7 +16,7 @@ exports.handler = async (event) => {
 
   const headers = { "X-Figma-Token": token };
 
-  // 1) 댓글 + 2) 파일 메타(depth=1)를 병렬로
+  // 1) 댓글 + 2) 파일 메타(depth=1) 병렬
   let cRes, fRes;
   try {
     [cRes, fRes] = await Promise.all([
@@ -35,22 +36,36 @@ exports.handler = async (event) => {
   let fileName = "", lastModified = "";
   if (fRes && fRes.ok) { try { const fd = await fRes.json(); fileName = fd.name || ""; lastModified = fd.lastModified || ""; } catch {} }
 
-  // 3) 구조: 캐시가 최신이면 생략. 아니면 트리에서 "앵커 노드만" 추출 (작은 응답 + 타임아웃 가드)
+  // 3) 구조: 캐시 최신이면 생략. 아니면 앵커 노드 id만 ?ids= 로 잘라서 받음(메모리 안전).
   let nodes = null, usedCache = false, structTimedOut = false;
   if (structLastModified && lastModified && structLastModified === lastModified) {
     usedCache = true;
   } else {
     const byId = Object.create(null);
     for (const c of comments) byId[c.id] = c;
-    const anchorIds = new Set();
-    for (const c of comments) { const a = anchorIdOf(c, byId); if (a) anchorIds.add(a); }
-    if (anchorIds.size) {
+    const anchorIds = [];
+    const seen = new Set();
+    for (const c of comments) { const a = anchorIdOf(c, byId); if (a && !seen.has(a)) { seen.add(a); anchorIds.push(a); } }
+    if (anchorIds.length) {
+      const chunks = [];
+      for (let i = 0; i < anchorIds.length; i += IDS_PER_REQUEST) chunks.push(anchorIds.slice(i, i + IDS_PER_REQUEST));
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), TREE_TIMEOUT_MS);
       try {
-        const tRes = await fetch(`${FIGMA}/files/${encodeURIComponent(fileKey)}`, { headers, signal: ctrl.signal });
-        if (tRes.ok) { const tree = await tRes.json(); nodes = pickAnchorNodes(tree, anchorIds); if (!lastModified) lastModified = tree.lastModified || ""; }
-      } catch (e) { structTimedOut = true; } // abort/네트워크 → 저하 모드(댓글은 정상)
+        const trees = await Promise.all(chunks.map((ch) =>
+          fetch(`${FIGMA}/files/${encodeURIComponent(fileKey)}?ids=${encodeURIComponent(ch.join(","))}`, { headers, signal: ctrl.signal })
+            .then((r) => (r.ok ? r.json() : null)).catch(() => null)
+        ));
+        const merged = Object.create(null);
+        let any = false;
+        for (const tree of trees) {
+          if (!tree) continue;
+          any = true;
+          pickAnchorNodes(tree, seen, merged);
+          if (!lastModified) lastModified = tree.lastModified || "";
+        }
+        if (any) nodes = merged; else structTimedOut = true;
+      } catch (e) { structTimedOut = true; }
       finally { clearTimeout(timer); }
     } else {
       nodes = {}; // 앵커 없는 파일
@@ -73,28 +88,24 @@ function anchorIdOf(comment, byId) {
   if (cm.node_id) return Array.isArray(cm.node_id) ? cm.node_id[0] : cm.node_id;
   return null;
 }
-// 전체 트리를 순회하되, 앵커 id에 해당하는 노드만 골라 작은 맵으로 반환
-function pickAnchorNodes(fileJson, anchorIds) {
-  const nodes = Object.create(null);
+// ?ids= 로 받은 (가지치기된) 문서를 순회하며 앵커 노드 + 페이지명을 out에 담는다
+function pickAnchorNodes(fileJson, wanted, out) {
   const doc = fileJson && fileJson.document;
-  if (!doc || !Array.isArray(doc.children)) return nodes;
-  let remaining = anchorIds.size;
+  if (!doc || !Array.isArray(doc.children)) return out;
   for (const page of doc.children) {
     const pageName = page.name || "(이름 없는 페이지)";
     const stack = [page];
     while (stack.length) {
       const n = stack.pop();
       if (!n || !n.id) continue;
-      if (anchorIds.has(n.id)) {
+      if (wanted.has(n.id)) {
         const bb = n.absoluteBoundingBox || {};
-        nodes[n.id] = { name: n.name || "(이름 없음)", w: bb.width || 0, h: bb.height || 0, page: pageName };
-        remaining--;
+        out[n.id] = { name: n.name || "(이름 없음)", w: bb.width || 0, h: bb.height || 0, page: pageName };
       }
       if (Array.isArray(n.children)) for (const ch of n.children) stack.push(ch);
     }
-    if (remaining <= 0) break; // 모든 앵커를 찾으면 조기 종료
   }
-  return nodes;
+  return out;
 }
 function resp(statusCode, obj) {
   return { statusCode, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
