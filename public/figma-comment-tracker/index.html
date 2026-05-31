@@ -247,7 +247,10 @@
   .pv-bar i{display:block;height:100%;width:40%;background:var(--accent);border-radius:99px;animation:slide 1.1s ease-in-out infinite;}
   @keyframes slide{0%{margin-left:-40%;}100%{margin-left:100%;}}
   .pv-zoomhint{position:absolute;right:8px;bottom:8px;background:rgba(28,36,34,.78);color:#fff;font-size:10px;padding:3px 8px;border-radius:99px;pointer-events:none;}
-  .pv-cap{font-size:11px;color:var(--soft);padding:7px 10px;border-top:1px solid var(--line);}
+  .pv-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 10px;border-top:1px solid var(--line);}
+  .pv-cap{font-size:11px;color:var(--soft);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .pv-close-btn{flex-shrink:0;display:inline-flex;align-items:center;gap:5px;border:1px solid var(--accent);background:var(--accent-soft);color:var(--accent);border-radius:8px;padding:6px 12px;font:inherit;font-size:12px;font-weight:700;cursor:pointer;}
+  .pv-close-btn:hover{background:var(--accent);color:#fff;}
 
   .lightbox{position:fixed;inset:0;background:rgba(20,26,24,.92);z-index:100;display:none;flex-direction:column;}
   .lightbox.show{display:flex;}
@@ -315,6 +318,7 @@
   .act-flag.on{color:#C9972B;border-color:#E7CE8A;background:#FFFBEF;}
   .act-loc{display:flex;align-items:center;gap:5px;border:1px solid var(--line);background:var(--card);color:var(--soft);border-radius:8px;padding:6px 12px;font:inherit;font-size:12px;font-weight:700;cursor:pointer;}
   .act-loc:hover{border-color:var(--accent);color:var(--accent);}
+  .act-loc.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent);}
   .act-reply{display:flex;align-items:center;gap:5px;border:1px solid var(--line);background:var(--card-2,#FBFAF7);color:var(--soft);border-radius:8px;padding:6px 12px;font:inherit;font-size:12px;font-weight:700;cursor:pointer;}
   .act-reply:hover{border-color:var(--accent);color:var(--accent);}
   .msg.clamp{display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden;}
@@ -877,10 +881,10 @@ function card(c){
     '<button class="more-link">…더보기</button>'+
     '<div class="cfoot"><button class="done-toggle act-done'+(r.done?" on":"")+'">'+(r.done?"✓ 확인됨":"○ 미확인")+'</button>'+
     '<button class="flag-toggle act-flag'+(r.flagged?" on":"")+'" title="책갈피">'+(r.flagged?"★":"☆")+'</button>'+
-    '<div class="ctools">'+(c.anchorNodeId?'<button class="pv-btn act-loc">⊞ 위치 보기</button>':'')+
+    '<div class="ctools">'+(c.anchorNodeId?'<button class="pv-btn act-loc">⊞ 미리보기</button>':'')+
       '<button class="reply-foot act-reply">'+(reps.length?("답글 "+reps.length):"답글 작성")+'</button></div></div>'+
     '<div class="replies"></div>'+
-    '<div class="preview"><div class="pv-wrap"></div></div></div>';
+    '<div class="preview"><div class="pv-wrap"></div><div class="pv-foot"><span class="pv-cap"></span><button class="pv-close-btn">⤴ 미리보기 닫기</button></div></div></div>';
 
   // 확인 완료 토글
   el.querySelector(".done-toggle").onclick=()=>toggleDone(c);
@@ -905,15 +909,15 @@ function card(c){
   // 위치 미리보기 + hover prefetch
   const pvBtn=el.querySelector(".pv-btn");
   if(pvBtn){
-    const pv=el.querySelector(".preview"),pvWrap=el.querySelector(".pv-wrap");
-    let loaded=false;
-    // hover prefetch (0.4s 지연, 캐시, 동시 제한)
-    let hoverT;
+    const pv=el.querySelector(".preview"),pvWrap=el.querySelector(".pv-wrap"),pvClose=el.querySelector(".pv-close-btn");
+    let loaded=false, hoverT;
     el.addEventListener("mouseenter",()=>{hoverT=setTimeout(()=>pfSchedule(()=>loadImg(c.anchorNodeId,1).catch(()=>{})),400);});
     el.addEventListener("mouseleave",()=>clearTimeout(hoverT));
-    pvBtn.onclick=async()=>{
-      const showing=pv.classList.toggle("show");pvBtn.textContent=showing?"⊞ 미리보기 숨기기":"⊞ 위치 보기";
-      if(showing&&!loaded){loaded=true;
+    async function setPreview(open){
+      pv.classList.toggle("show",open);
+      pvBtn.classList.toggle("on",open);                       // 열렸을 때 버튼 강조
+      pvBtn.textContent=open?"⊞ 미리보기 닫기":"⊞ 미리보기";
+      if(open&&!loaded){loaded=true;
         const cachedUrl=getCachedImg(c.anchorNodeId,1);
         if(cachedUrl){paintPreview(pvWrap,pv,c,cachedUrl);}
         else{pvWrap.innerHTML='<div class="pv-progress"><span class="spin" style="border-top-color:var(--accent)"></span>Figma에서 렌더 중… 몇 초 걸릴 수 있어요<div class="pv-bar"><i></i></div></div>';
@@ -921,7 +925,10 @@ function card(c){
           catch(e){loaded=false;pvWrap.innerHTML='<div class="pv-progress">'+esc(e.message)+'</div>';}
         }
       }
-    };
+    }
+    pvBtn.onclick=()=>setPreview(!pv.classList.contains("show"));
+    // 하단 닫기 버튼 — 닫은 뒤 카드가 화면에 보이도록 정렬(위로 스크롤 불필요)
+    if(pvClose)pvClose.onclick=()=>{setPreview(false);el.scrollIntoView({behavior:"smooth",block:"nearest"});};
   }
   return el;
 }
@@ -938,7 +945,7 @@ function paintPreview(pvWrap,pv,c,url){
   if(c.nodeOffset&&c.anchorNodeSize&&c.anchorNodeSize.w&&c.anchorNodeSize.h){px=Math.max(0,Math.min(100,c.nodeOffset.x/c.anchorNodeSize.w*100));py=Math.max(0,Math.min(100,c.nodeOffset.y/c.anchorNodeSize.h*100));}
   pvWrap.innerHTML='<img src="'+url+'"/>'+(px!==null?'<span class="pin" style="left:'+px+'%;top:'+py+'%"></span>':'')+'<span class="pv-zoomhint">클릭하면 확대</span>';
   pvWrap.onclick=()=>openLightbox(url,px,py,"#"+c.thread+" · "+(c.anchorNodeName||c.anchorNodeId),c.anchorNodeId,hiResScale(c));
-  if(!pv.querySelector(".pv-cap")){const cap=document.createElement("div");cap.className="pv-cap";cap.textContent="앵커: "+(c.anchorNodeName||c.anchorNodeId);pv.appendChild(cap);}
+  const cap=pv.querySelector(".pv-cap");if(cap)cap.textContent="앵커: "+(c.anchorNodeName||c.anchorNodeId);
 }
 
 /* ============ 검토/답글 ============ */
