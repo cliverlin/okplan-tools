@@ -925,11 +925,19 @@ function card(c){
   }
   return el;
 }
+function hiResScale(c){
+  // 노드 크기에 맞춰 고해상도 scale 산정 (긴 변 ≈ 2400px, 0.5~2 범위). 크기 모르면 2.
+  if(c.anchorNodeSize&&c.anchorNodeSize.w&&c.anchorNodeSize.h){
+    const maxSide=Math.max(c.anchorNodeSize.w,c.anchorNodeSize.h);
+    return Math.round(Math.max(0.5,Math.min(2,2400/maxSide))*100)/100;
+  }
+  return 2;
+}
 function paintPreview(pvWrap,pv,c,url){
   let px=null,py=null;
   if(c.nodeOffset&&c.anchorNodeSize&&c.anchorNodeSize.w&&c.anchorNodeSize.h){px=Math.max(0,Math.min(100,c.nodeOffset.x/c.anchorNodeSize.w*100));py=Math.max(0,Math.min(100,c.nodeOffset.y/c.anchorNodeSize.h*100));}
   pvWrap.innerHTML='<img src="'+url+'"/>'+(px!==null?'<span class="pin" style="left:'+px+'%;top:'+py+'%"></span>':'')+'<span class="pv-zoomhint">클릭하면 확대</span>';
-  pvWrap.onclick=()=>openLightbox(url,px,py,"#"+c.thread+" · "+(c.anchorNodeName||c.anchorNodeId),c.anchorNodeId);
+  pvWrap.onclick=()=>openLightbox(url,px,py,"#"+c.thread+" · "+(c.anchorNodeName||c.anchorNodeId),c.anchorNodeId,hiResScale(c));
   if(!pv.querySelector(".pv-cap")){const cap=document.createElement("div");cap.className="pv-cap";cap.textContent="앵커: "+(c.anchorNodeName||c.anchorNodeId);pv.appendChild(cap);}
 }
 
@@ -1007,21 +1015,22 @@ function wireLightbox(){
   window.addEventListener("mouseup",()=>{LB.drag=false;stage.classList.remove("grabbing");});
   stage.addEventListener("dblclick",fitLightbox);
 }
-function openLightbox(url,px,py,title,nodeId){
+function openLightbox(url,px,py,title,nodeId,hiScale){
   const img=$("lbImg");LB.px=px;LB.py=py;LB.hi=false;LB.token=(LB.token||0)+1;const myTok=LB.token;
+  const baseHint="스크롤=확대/축소 · 드래그=이동 · 더블클릭=원래대로";
   $("lbTitle").textContent=title||"";$("lightbox").classList.add("show");
-  $("lbHint").textContent="스크롤=확대/축소 · 드래그=이동 · 더블클릭=원래대로";
+  $("lbHint").textContent=baseHint;
   img.onload=()=>{LB.natW=img.naturalWidth;LB.natH=img.naturalHeight;fitLightbox();};
   img.src=url;   // 썸네일(scale 1) 먼저
-  // 고해상도(scale 2)를 백그라운드로 받아 교체 — 더 자세한 이미지
-  if(nodeId){
+  // 고해상도를 백그라운드로 받아 교체 — 썸네일보다 의미있게 클 때만(노드 크기 적응)
+  if(nodeId&&(hiScale||2)>1.1){
     $("lbHint").textContent="고해상도 불러오는 중…";
-    loadImg(nodeId,2).then(hi=>{
+    loadImg(nodeId,hiScale||2).then(hi=>{
       if(!hi||myTok!==LB.token||!$("lightbox").classList.contains("show"))return;
       LB.hi=true;
-      img.onload=()=>{LB.natW=img.naturalWidth;LB.natH=img.naturalHeight;fitLightbox();$("lbHint").textContent="고해상도 · 스크롤=확대 · 드래그=이동 · 더블클릭=원래대로";};
+      img.onload=()=>{LB.natW=img.naturalWidth;LB.natH=img.naturalHeight;fitLightbox();$("lbHint").textContent="고해상도 · "+baseHint;};
       img.src=hi;
-    }).catch(()=>{$("lbHint").textContent="스크롤=확대/축소 · 드래그=이동 · 더블클릭=원래대로";});
+    }).catch(()=>{$("lbHint").textContent=baseHint;});
   }
 }
 function closeLightbox(){$("lightbox").classList.remove("show");$("lbImg").src="";LB.token=(LB.token||0)+1;}
