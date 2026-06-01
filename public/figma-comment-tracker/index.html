@@ -732,7 +732,8 @@ async function doFetch(background,fileUrlOverride){
     $("url").value=fileUrl;
     lset(cacheKey(data.fileKey),data);
     lset(K_URL,fileUrl);
-    setHint("ok","등록 코멘트 "+data.stats.threads+"건 · 답글 "+data.stats.replies+"개 (총 "+data.stats.total+")"+(raw.usedCache?" · 구조 캐시 사용":"")+(raw.structTimedOut?" · 파일이 커서 페이지/위치 정보는 생략됨":""));
+    const structNote=raw.structTimedOut?" · 파일이 커서 위치 정보를 불러오지 못함":(raw.pagePartial?" · 파일이 커서 일부 페이지 정보 생략(위치는 표시됨)":"");
+    setHint("ok","등록 코멘트 "+data.stats.threads+"건 · 답글 "+data.stats.replies+"개 (총 "+data.stats.total+")"+(raw.usedCache?" · 구조 캐시 사용":"")+structNote);
     loadFiles();
   }catch(e){ if(!background) say("err","네트워크 오류: "+e.message); }
   finally{ btn.disabled=false; btn.textContent=adding?"추가":"새로고침"; }
@@ -940,11 +941,27 @@ function hiResScale(c){
   }
   return 2;
 }
+function clampPct(v){return Math.max(0,Math.min(100,v));}
+// 코멘트 핀 위치(%) — 노드 크기를 알면 그걸로, 모르면 null(이미지 로드 후 자연크기로 보정)
+function pinPercent(c){
+  if(c.nodeOffset&&c.anchorNodeSize&&c.anchorNodeSize.w&&c.anchorNodeSize.h)
+    return {px:clampPct(c.nodeOffset.x/c.anchorNodeSize.w*100),py:clampPct(c.nodeOffset.y/c.anchorNodeSize.h*100)};
+  return null;
+}
+// scale=1 렌더 이미지의 자연크기 == 노드 바운딩박스 → 크기를 몰라도 핀 위치를 복원
+function pinPercentFromImg(c,img){
+  if(c.nodeOffset&&img.naturalWidth&&img.naturalHeight)
+    return {px:clampPct(c.nodeOffset.x/img.naturalWidth*100),py:clampPct(c.nodeOffset.y/img.naturalHeight*100)};
+  return null;
+}
 function paintPreview(pvWrap,pv,c,url){
-  let px=null,py=null;
-  if(c.nodeOffset&&c.anchorNodeSize&&c.anchorNodeSize.w&&c.anchorNodeSize.h){px=Math.max(0,Math.min(100,c.nodeOffset.x/c.anchorNodeSize.w*100));py=Math.max(0,Math.min(100,c.nodeOffset.y/c.anchorNodeSize.h*100));}
-  pvWrap.innerHTML='<img src="'+url+'"/>'+(px!==null?'<span class="pin" style="left:'+px+'%;top:'+py+'%"></span>':'')+'<span class="pv-zoomhint">클릭하면 확대</span>';
-  pvWrap.onclick=()=>openLightbox(url,px,py,"#"+c.thread+" · "+(c.anchorNodeName||c.anchorNodeId),c.anchorNodeId,hiResScale(c));
+  pvWrap.innerHTML='<img src="'+url+'"/><span class="pin" hidden></span><span class="pv-zoomhint">클릭하면 확대</span>';
+  const img=pvWrap.querySelector("img"),pin=pvWrap.querySelector(".pin");
+  const place=(p)=>{if(!p){pin.hidden=true;return;}pin.hidden=false;pin.style.left=p.px+"%";pin.style.top=p.py+"%";};
+  let pos=pinPercent(c);
+  if(pos)place(pos);                              // 노드 크기를 알면 즉시 표시
+  else if(c.nodeOffset)img.addEventListener("load",()=>{pos=pinPercentFromImg(c,img);place(pos);},{once:true}); // 모르면 이미지 로드 후 보정
+  pvWrap.onclick=()=>openLightbox(url,(pos?pos.px:null),(pos?pos.py:null),"#"+c.thread+" · "+(c.anchorNodeName||c.anchorNodeId),c.anchorNodeId,hiResScale(c),c.nodeOffset||null);
   const cap=pv.querySelector(".pv-cap");if(cap)cap.textContent="앵커: "+(c.anchorNodeName||c.anchorNodeId);
 }
 
@@ -1022,12 +1039,15 @@ function wireLightbox(){
   window.addEventListener("mouseup",()=>{LB.drag=false;stage.classList.remove("grabbing");});
   stage.addEventListener("dblclick",fitLightbox);
 }
-function openLightbox(url,px,py,title,nodeId,hiScale){
-  const img=$("lbImg");LB.px=px;LB.py=py;LB.hi=false;LB.token=(LB.token||0)+1;const myTok=LB.token;
+function openLightbox(url,px,py,title,nodeId,hiScale,nodeOffset){
+  const img=$("lbImg");LB.px=px;LB.py=py;LB.no=nodeOffset||null;LB.hi=false;LB.token=(LB.token||0)+1;const myTok=LB.token;
   const baseHint="스크롤=확대/축소 · 드래그=이동 · 더블클릭=원래대로";
   $("lbTitle").textContent=title||"";$("lightbox").classList.add("show");
   $("lbHint").textContent=baseHint;
-  img.onload=()=>{LB.natW=img.naturalWidth;LB.natH=img.naturalHeight;fitLightbox();};
+  img.onload=()=>{LB.natW=img.naturalWidth;LB.natH=img.naturalHeight;
+    // 핀 위치를 못 받았으면 scale=1 이미지 자연크기로 보정(% 값이라 고해상도에도 그대로 유효)
+    if((LB.px==null||LB.py==null)&&LB.no&&LB.natW&&LB.natH){LB.px=clampPct(LB.no.x/LB.natW*100);LB.py=clampPct(LB.no.y/LB.natH*100);}
+    fitLightbox();};
   img.src=url;   // 썸네일(scale 1) 먼저
   // 고해상도를 백그라운드로 받아 교체 — 썸네일보다 의미있게 클 때만(노드 크기 적응)
   if(nodeId&&(hiScale||2)>1.1){
