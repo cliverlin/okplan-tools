@@ -646,6 +646,7 @@ function onAuthFail(msg){
 
 /* ============ 가져오기 ============ */
 function applyData(d, fileKey){
+  resetPageResolver();   // 파일이 바뀌면 이전 lazy 페이지 해석 큐/관찰자 정리
   S.fileKey=fileKey||d.fileKey;S.fileName=d.fileName||"";
   S.lastModified=d.lastModified||"";S.comments=d.comments||[];S.pages=d.pages||[];
   S.stats=d.stats;S.diff=d.diff;
@@ -732,7 +733,7 @@ async function doFetch(background,fileUrlOverride){
     $("url").value=fileUrl;
     lset(cacheKey(data.fileKey),data);
     lset(K_URL,fileUrl);
-    const structNote=raw.structTimedOut?" · 파일이 커서 위치 정보를 불러오지 못함":(raw.pagePartial?" · 파일이 커서 일부 페이지 정보 생략(위치는 표시됨)":"");
+    const structNote=raw.structTimedOut?" · 파일이 커서 위치 정보를 불러오지 못함":(raw.pagePartial?" · 파일이 커서 일부 페이지명은 스크롤하며 자동으로 채워집니다":"");
     setHint("ok","등록 코멘트 "+data.stats.threads+"건 · 답글 "+data.stats.replies+"개 (총 "+data.stats.total+")"+(raw.usedCache?" · 구조 캐시 사용":"")+structNote);
     loadFiles();
   }catch(e){ if(!background) say("err","네트워크 오류: "+e.message); }
@@ -741,6 +742,7 @@ async function doFetch(background,fileUrlOverride){
 
 function deleteCurrentFile(){
   if(!S.fileKey)return;
+  resetPageResolver();
   const removedKey=S.fileKey;
   const removedName=S.fileName||"선택된 파일";
   S.files=S.files.filter(f=>f.fileKey!==removedKey);
@@ -856,6 +858,7 @@ function renderList(){
       if(m&&ml&&m.scrollHeight>m.clientHeight+2)ml.classList.add("show");
     });
   });
+  observeMissingPages(list);   // 페이지명 미확보 카드 → 화면에 들어오면 lazy 로 채움
 }
 function card(c){
   const r=reviewOf(c.id);
@@ -864,6 +867,8 @@ function card(c){
   const el=document.createElement("article");
   el.className="card"+(r.done?" done":"");
   el.id="comment-"+c.id;
+  // 페이지명을 아직 못 받은(큰 파일) 카드 표시 — 스크롤 시 lazy 로 채운다
+  if(c.anchorNodeId){el.dataset.anchor=c.anchorNodeId;if(!c.page)el.dataset.needpage="1";}
   // 주의 상태만 칩으로: Figma 미해결 / 답글 없음
   const chips=
     (c.resolved_at?'':'<span class="chip chip-figma-open">Figma 미해결</span>')+
@@ -875,7 +880,7 @@ function card(c){
     '<span class="author">'+hl(esc(c.author))+'</span><span class="time mono">'+fmt(c.created_at)+'</span>'+
     (chips?'<span class="chips">'+chips+'</span>':'')+
     '<span class="right">'+
-      (c.page?'<span class="page-tag">'+esc(c.page)+'</span>':'')+
+      '<span class="page-tag" data-pagetag'+(c.page?'':' hidden')+'>'+esc(c.page||'')+'</span>'+
       '<a class="fig-ic" href="'+c.link+'" target="_blank" rel="noopener" title="Figma에서 열기" aria-label="Figma에서 열기">↗</a>'+
     '</span></div>'+
     '<p class="msg clamp">'+renderMessage(c.message)+'</p>'+
@@ -1025,6 +1030,71 @@ async function loadImg(nodeId,scale){
 let pfActive=0;const pfQ=[];
 function pfSchedule(fn){pfQ.push(fn);pfPump();}
 function pfPump(){while(pfActive<3&&pfQ.length){const fn=pfQ.shift();pfActive++;Promise.resolve(fn()).finally(()=>{pfActive--;pfPump();});}}
+
+/* ============ 페이지명 lazy 채움 (큰 파일 대응) ============
+ * 큰 파일은 가져오기 단계에서 페이지명을 전부 못 받는다(=일부 생략). 화면에 보이는
+ * 코멘트의 앵커만 낮은 동시성(2) + 간격으로 순차 해석해 rate limit 폭주(미리보기 렌더
+ * 실패의 원인) 없이 점진적으로 채운다. 같은 앵커는 1회만 요청해 여러 코멘트를 동시에 갱신. */
+const PAGE_POOL=2;            // 동시 요청 수(낮게 유지 → /images 와 경쟁 안 함)
+const PAGE_GAP_MS=150;        // 요청 간 간격
+let pageQ=[],pageActive=0,pageDelayUntil=0;
+const pageTried=new Set();    // 이번 파일에서 이미 시도/완료한 앵커
+let pageObserver=null;
+function resetPageResolver(){
+  if(pageObserver){pageObserver.disconnect();pageObserver=null;}
+  pageQ=[];pageActive=0;pageDelayUntil=0;pageTried.clear();
+}
+function observeMissingPages(list){
+  if(pageObserver)pageObserver.disconnect();
+  const targets=list.querySelectorAll('.card[data-needpage="1"]');
+  if(!targets.length){pageObserver=null;return;}
+  if(!("IntersectionObserver" in window)){ // 미지원 시 전체를 천천히 큐잉
+    targets.forEach(el=>enqueuePage(el.dataset.anchor));return;
+  }
+  pageObserver=new IntersectionObserver((entries,obs)=>{
+    for(const e of entries){if(e.isIntersecting){enqueuePage(e.target.dataset.anchor);obs.unobserve(e.target);}}
+  },{rootMargin:"200px"});
+  targets.forEach(el=>pageObserver.observe(el));
+}
+function enqueuePage(anchorId){
+  if(!anchorId||pageTried.has(anchorId))return;
+  pageTried.add(anchorId);pageQ.push(anchorId);pumpPage();
+}
+function pumpPage(){
+  while(pageActive<PAGE_POOL&&pageQ.length){
+    const anchorId=pageQ.shift();pageActive++;
+    resolvePage(anchorId).catch(()=>{}).finally(()=>{pageActive--;setTimeout(pumpPage,PAGE_GAP_MS);});
+  }
+}
+async function resolvePage(anchorId){
+  if(!S.fileKey||!S.token)return;
+  const fk=S.fileKey;   // 응답 도착 시 다른 파일로 바뀌었으면 무시
+  const wait=pageDelayUntil-Date.now();if(wait>0)await new Promise(r=>setTimeout(r,wait));
+  let r;
+  try{r=await fetch(FN("page"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({fileKey:fk,token:S.token,nodeId:anchorId})});}
+  catch{ pageTried.delete(anchorId); return; } // 네트워크 오류 → 다음 스크롤에 재시도 허용
+  if(r.status===429){pageDelayUntil=Date.now()+2000;pageTried.delete(anchorId);pageQ.push(anchorId);return;} // 백오프 후 재시도
+  if(!r.ok){if(r.status===401){try{const d=await r.json();onAuthFail(d.error);}catch{}}return;}
+  let d;try{d=await r.json();}catch{return;}
+  if(d&&d.page&&S.fileKey===fk)applyResolvedPage(anchorId,d.page);
+}
+function applyResolvedPage(anchorId,page){
+  let changed=false;
+  for(const c of S.comments){if(c.anchorNodeId===anchorId&&!c.page){c.page=page;changed=true;}}
+  if(!changed)return;
+  if(!S.pages.includes(page)){S.pages.push(page);renderPageOptions();}
+  // 재렌더 없이 해당 카드의 page-tag 만 채움(스크롤/관찰 상태 보존)
+  document.querySelectorAll('.card[data-anchor="'+(window.CSS&&CSS.escape?CSS.escape(anchorId):anchorId)+'"]').forEach(el=>{
+    el.removeAttribute("data-needpage");
+    const tag=el.querySelector("[data-pagetag]");
+    if(tag&&!tag.textContent){tag.textContent=page;tag.hidden=false;}
+  });
+  // 캐시 갱신 → 다음 로드/필터에도 반영
+  const sc=lget(structKey(S.fileKey));if(sc&&sc.nodes&&sc.nodes[anchorId]){sc.nodes[anchorId].page=page;lset(structKey(S.fileKey),sc);}
+  const cc=lget(cacheKey(S.fileKey));
+  if(cc){if(Array.isArray(cc.comments))cc.comments.forEach(c=>{if(c.anchorNodeId===anchorId&&!c.page)c.page=page;});
+    if(Array.isArray(cc.pages)&&!cc.pages.includes(page))cc.pages.push(page);lset(cacheKey(S.fileKey),cc);}
+}
 
 /* ============ 라이트박스 ============ */
 const LB={scale:1,tx:0,ty:0,drag:false,sx:0,sy:0,natW:0,natH:0,px:null,py:null};
