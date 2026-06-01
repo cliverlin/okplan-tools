@@ -1,19 +1,18 @@
 /* Figma Comment Tracker — 댓글 + 파일메타(+앵커 노드만) 프록시 (상태 없음)
  * 큰 파일에서 전체 문서를 파싱하면 함수가 OOM으로 killed 되므로,
- * 댓글이 붙은 노드 id만 잘라서 받는다. 세 갈래로 "항상" 위치·페이지를 확보한다.
- *  A) /nodes?ids=&depth=1   → 노드명 + 크기(absoluteBoundingBox). depth가 "노드 기준"이라
+ * 댓글이 붙은 노드 id만 잘라서 두 갈래로 받는다.
+ *  A) /nodes?ids=&depth=1 → 노드명 + 크기(absoluteBoundingBox). depth가 "노드 기준"이라
  *     하위 트리를 안 받아 가볍고 빠름 → 위치(핀)·크기는 큰 파일에서도 항상 확보.
- *  B) /files?ids=배치       → 페이지명(루트~노드 경로 ancestor). 정상 파일은 여기서 다 채워짐.
- *     (파일 endpoint의 depth는 "문서 루트 기준"이라 배치에 depth를 못 씀 → 하위 트리째 와서 무거움)
- *  C) /files?ids=<단일>&depth=1 → B에서 빠진 앵커만 1개씩 복구. ids로 ancestor 경로만 남고
- *     depth=1이 페이지 레벨에서 잘라 "그 노드의 페이지 하나"만 작게 옴 → 큰 파일에서도 안전. */
+ *  B) /files?ids=배치     → 페이지명(루트~노드 경로 ancestor). 베스트에포트로 병합.
+ *     (파일 endpoint의 depth는 "문서 루트 기준"이라 깊은 앵커를 잘라버리므로 쓸 수 없음.
+ *      앵커가 큰 프레임이면 하위 트리째 와서 무거워 큰 파일에선 타임아웃될 수 있다.)
+ * 주의: id 1개씩 다량 요청하는 "개별 복구"는 토큰 공용 rate limit을 소진시켜
+ *       직후의 /images(미리보기 렌더)를 429/지연시키므로 쓰지 않는다(요청 수를 낮게 유지). */
 const FIGMA = "https://api.figma.com/v1";
-const IDS_PER_REQUEST = 50;     // 페이지용 /files?ids= 배치 청크
-const NODES_PER_REQUEST = 100;  // /nodes?ids=&depth=1 청크 — 응답이 작아 크게 잡아도 됨
-const AB_TIMEOUT_MS = 4000;     // 1차(A 노드/크기 + B 페이지 배치) 예산
-const STRUCT_BUDGET_MS = 8000;  // 구조 전체 예산(1차 + C 페이지 개별 복구), Netlify 10s 안에서
-const PAGE_RECOVER_POOL = 12;   // C 개별 복구 동시 요청 수
-const PAGE_RECOVER_MAX = 400;   // C 폭주 방지 상한(초과분은 페이지 비움)
+const IDS_PER_REQUEST = 20;       // 페이지용 /files?ids= 배치 청크(작게 → 큰 앵커 1개가 청크 전체를
+                                  //  막지 않아 부분 성공률↑. 89앵커≈5요청으로 rate limit 위험 없음)
+const NODES_PER_REQUEST = 100;    // /nodes?ids=&depth=1 청크 — 응답이 작아 크게 잡아도 됨
+const STRUCT_TIMEOUT_MS = 7000;   // 구조(A+B) 예산 — Netlify 10s 안에서
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") return resp(405, { error: "POST only" });
@@ -60,20 +59,19 @@ exports.handler = async (event) => {
       const nodeChunks = chunk(anchorIds, NODES_PER_REQUEST);
       const fileChunks = chunk(anchorIds, IDS_PER_REQUEST);
       const merged = Object.create(null);
-      const startedAt = Date.now();
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), STRUCT_TIMEOUT_MS);
       let gotNodes = false, gotFile = false;
-
-      // 1차: A(노드명/크기) + B(페이지 배치) 병렬 — 짧은 예산으로
-      const ctrlAB = new AbortController();
-      const timerAB = setTimeout(() => ctrlAB.abort(), AB_TIMEOUT_MS);
       try {
         const [nodeRes, fileRes] = await Promise.all([
+          // A) 노드명 + 크기 (가볍고 신뢰도 높음 → 위치/핀은 항상 확보)
           Promise.all(nodeChunks.map((ch) =>
-            fetch(`${FIGMA}/files/${encodeURIComponent(fileKey)}/nodes?ids=${encodeURIComponent(ch.join(","))}&depth=1`, { headers, signal: ctrlAB.signal })
+            fetch(`${FIGMA}/files/${encodeURIComponent(fileKey)}/nodes?ids=${encodeURIComponent(ch.join(","))}&depth=1`, { headers, signal: ctrl.signal })
               .then((r) => (r.ok ? r.json() : null)).catch(() => null)
           )),
+          // B) 페이지명 (ancestor 경로에서 추출, 베스트에포트)
           Promise.all(fileChunks.map((ch) =>
-            fetch(`${FIGMA}/files/${encodeURIComponent(fileKey)}?ids=${encodeURIComponent(ch.join(","))}`, { headers, signal: ctrlAB.signal })
+            fetch(`${FIGMA}/files/${encodeURIComponent(fileKey)}?ids=${encodeURIComponent(ch.join(","))}`, { headers, signal: ctrl.signal })
               .then((r) => (r.ok ? r.json() : null)).catch(() => null)
           )),
         ]);
@@ -95,23 +93,11 @@ exports.handler = async (event) => {
           if (!lastModified) lastModified = tree.lastModified || "";
         }
       } catch (e) { /* 부분 성공분은 merged에 남음 */ }
-      finally { clearTimeout(timerAB); }
+      finally { clearTimeout(timer); }
 
-      // 2차(C): 페이지가 빠진 앵커만 1개씩 복구(?ids=<id>&depth=1 → 페이지 노드 하나만 작게)
-      let missing = anchorIds.filter((id) => !merged[id] || !merged[id].page);
-      if (missing.length > PAGE_RECOVER_MAX) missing = missing.slice(0, PAGE_RECOVER_MAX);
-      const remain = STRUCT_BUDGET_MS - (Date.now() - startedAt);
-      if (missing.length && remain > 800) {
-        const ctrlRec = new AbortController();
-        const timerRec = setTimeout(() => ctrlRec.abort(), remain);
-        try { gotFile = (await recoverPages(fileKey, headers, missing, merged, ctrlRec.signal)) || gotFile; }
-        catch (e) { /* 복구 실패분은 페이지 비움 — graceful */ }
-        finally { clearTimeout(timerRec); }
-      }
-
-      if (gotNodes || gotFile || Object.keys(merged).length) {
+      if (gotNodes || gotFile) {
         nodes = merged;
-        // 그래도 페이지가 비어있는 앵커가 하나라도 있으면 부분 생략으로 표시
+        // 페이지가 비어있는 앵커가 하나라도 있으면 부분 생략으로 표시(위치/크기는 A에서 확보됨)
         for (const id of anchorIds) { if (!merged[id] || !merged[id].page) { pagePartial = true; break; } }
       } else {
         structTimedOut = true;
@@ -141,38 +127,6 @@ function chunk(arr, size) {
   const out = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
   return out;
-}
-// C단계: 페이지가 빠진 앵커를 id 1개씩 ?ids=<id>&depth=1 로 받아 페이지명만 채운다.
-// 응답이 작아 큰 파일에서도 안전. 동시요청 풀 + 429(rate limit) 시 중단. 반환=하나라도 성공 여부.
-async function recoverPages(fileKey, headers, ids, out, signal) {
-  let i = 0, stop = false, any = false;
-  async function worker() {
-    while (i < ids.length && !stop) {
-      const id = ids[i++];
-      let r;
-      try {
-        r = await fetch(`${FIGMA}/files/${encodeURIComponent(fileKey)}?ids=${encodeURIComponent(id)}&depth=1`, { headers, signal });
-      } catch { return; } // abort/네트워크 → 워커 종료
-      if (r.status === 429) { stop = true; return; } // rate limit → 전체 중단
-      if (!r.ok) continue;
-      let tree; try { tree = await r.json(); } catch { continue; }
-      const pageName = soloPageName(tree);
-      if (pageName) {
-        const prev = out[id] || { name: "(이름 없음)", w: 0, h: 0 };
-        if (!prev.page) { out[id] = { name: prev.name, w: prev.w, h: prev.h, page: pageName }; any = true; }
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(PAGE_RECOVER_POOL, ids.length) }, worker));
-  return any;
-}
-// 단일 id + depth=1 응답에서 페이지명을 안전하게 추출.
-// ancestor 페이지가 정확히 하나일 때만 신뢰(여러 개로 모호하면 채우지 않음 → 오답 방지).
-function soloPageName(tree) {
-  const doc = tree && tree.document;
-  if (!doc || !Array.isArray(doc.children) || doc.children.length !== 1) return "";
-  const page = doc.children[0];
-  return page ? (page.name || "(이름 없는 페이지)") : "";
 }
 // ?ids= 로 받은 (가지치기된) 문서를 순회하며 앵커 노드의 페이지명을 out에 병합한다
 // (이름/크기는 /nodes 쪽에서 이미 받았을 수 있으므로 기존 값을 보존하고 page만 채운다)
